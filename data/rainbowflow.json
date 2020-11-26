@@ -1,0 +1,4 @@
+[
+  { "pattern": "fill", "colors": [ "rainbow" ], "delay": 50 },
+  { "pattern": "shift", "delay": 50, "repeat": 10000 }
+]
