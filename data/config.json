@@ -1,0 +1,13 @@
+{
+	"wifi": {
+		"ssid": "my-ssid",
+		"pass": "my-passwd",
+		"www_port": 80
+	},
+	"strip": {
+		"gpio": 5,
+		"pixels": 50,
+		"speed": 800,
+		"layout": "RGB"
+	}
+}
