@@ -58,19 +58,19 @@ uint32_t getColor(const char *c) {
 
 struct PatternState {
   public:
-    int pat_idx;
-    int (*pfunc)(void);
-    int iter1;
-    int iter2;
-    int spansize;
-    bool forward = true;
-    enum PixelOp op = STRIPE;
-    unsigned long lastActionTime;
-    int loops_left;
-    uint32_t colors[16];
-    int numcolors;
-    int rundelay;
-    bool pauserun;
+    int pat_idx;                  // index of the current pattern in the current pattern file.
+    int (*pfunc)(void);           // current pattern function pointer.
+    int iter1;                    // Iterator for use within pattern execution. Resets every repeat of a pattern.
+    int iter2;                    // Iterator for use within pattern execution. Persists across repeats.
+    int spansize;                 // Span length for pattern draw, used for some patterns.
+    bool forward = true;          // Direction of pattern draw.
+    enum PixelOp op = STRIPE;     // How to paint the colors across the strip.
+    unsigned long lastActionTime; // timer for execution pacing
+    int loops_left;               // Number of repeats left.
+    uint32_t colors[16];          // Array of colors to paint n the strip.
+    int numcolors;                // Number of colors in the array.
+    int rundelay;                 // execution speed.
+    bool pauserun;                // pause execution if set.
     
     int initialize(int idx, JsonObjectConst v) {
       _initialize();
@@ -80,7 +80,11 @@ struct PatternState {
         if(!strcmp(it->key().c_str(), "pattern")) pfunc = getPatternFunc(it->value().as<const char*>());
         else if(!strcmp(it->key().c_str(), "speed")) rundelay = 100 - it->value().as<unsigned int>();
         else if(!strcmp(it->key().c_str(), "delay")) rundelay = it->value().as<unsigned int>();
-        else if(!strcmp(it->key().c_str(), "repeat")) loops_left = it->value().as<unsigned int>() - 1;
+        else if(!strcmp(it->key().c_str(), "repeat")) {
+          loops_left = it->value().as<int>();
+          if(loops_left < 0) loops_left = -(loops_left * strip.numPixels());
+          loops_left--;
+        }
         else if(!strcmp(it->key().c_str(), "span")) spansize = it->value().as<unsigned int>();
         else if(!strcmp(it->key().c_str(), "direction"))
           forward = strcmp(it->value().as<const char *>(), "reverse") ? true : false;
@@ -106,7 +110,7 @@ struct PatternState {
 
     int nextloop() {
       iter1 = 0;
-      iter2 = 0;
+      // iter2 = 0; retain iter2 across loops for the same pattern.
       loops_left--;
       return loops_left;
     }
@@ -172,20 +176,11 @@ uint32_t colorWheel(byte wheelPos) {
   }
 }
 
-void setPixelColor(int idx, uint32_t color, int modifier = 0) {
-  if(color == COLOR_HOLD) return;
-  else if(color == COLOR_FLIP) {
-    strip.setPixelColor(idx, 0xFFFFFF - strip.getPixelColor(idx)); // TODO: Broken for RGBW strips.
-  } else if(color == COLOR_RAINBOW) {
-    strip.setPixelColor(idx, colorWheel(((idx * 256 / strip.numPixels()) + modifier) & 255));
-  } else if(color == COLOR_RANDOM) {
-    strip.setPixelColor(idx, colorWheel(random(256)));
-  } else strip.setPixelColor(idx, color);
-}
 
 #define MIN(a,b) ((a) > (b) ? (b) : (a))
 
-void doPixelOp(int pix_id) {
+uint32_t indexColor(int pix_id) {
+  uint32_t color;
   switch(patternState.op) {     
     case SCALE:
     {
@@ -193,17 +188,37 @@ void doPixelOp(int pix_id) {
       int remainder = strip.numPixels() % patternState.numcolors;
       int baseidx = pix_id / factor;
       int color_idx = (pix_id - MIN(baseidx, remainder)) / factor;
-      setPixelColor(pix_id, patternState.colors[color_idx]);
+      color = patternState.colors[color_idx];
     }
     break;
     
     case STRIPE:
     default:
     {
-      setPixelColor(pix_id, patternState.colors[pix_id % patternState.numcolors]);
+      color = patternState.colors[pix_id % patternState.numcolors];
     }
     break;
   }
+  return color;
+}
+
+uint32_t calculateColor(int pix_id, uint32_t color, int modifier = 0) {
+  if(color == COLOR_HOLD) return strip.getPixelColor(pix_id);
+  else if(color == COLOR_FLIP) {
+    return 0xFFFFFF - strip.getPixelColor(pix_id); // TODO: Broken for RGBW strips.
+  } else if(color == COLOR_RAINBOW) {
+    return colorWheel(((pix_id * 256 / strip.numPixels()) + modifier) & 255);
+  } else if(color == COLOR_RANDOM) {
+    return colorWheel(random(256));
+  } else return color;
+}
+
+void setPixelColor(int idx, uint32_t color, int modifier = 0) {
+  strip.setPixelColor(idx, calculateColor(idx, color, modifier));
+}
+
+void doPixelOp(int pix_id) {
+  setPixelColor(pix_id, indexColor(pix_id));
 }
 
 int fillerFunc() {
@@ -224,7 +239,6 @@ int wiperFunc() {
   }
   return 0;
 }
-
 
 int curtainFunc() {
   int pix1, pix2;
@@ -270,22 +284,21 @@ int chaserFunc() {
 }
 
 int shifterFunc() {
-  if(patternState.forward) {
-    uint32_t color = strip.getPixelColor(strip.numPixels() - 1);
-    for(int i = 0; i < strip.numPixels(); i++) {
-      uint32_t c = strip.getPixelColor(i);
-      strip.setPixelColor(i, color);
-      color = c;
-    }
-  } else {
-    uint32_t color = strip.getPixelColor(0);
-    for(int i = strip.numPixels() - 1; i >= 0; i--) {
-      uint32_t c = strip.getPixelColor(i);
-      strip.setPixelColor(i, color);
-      color = c;
-    }
+  uint32_t color;
+
+  if(patternState.numcolors > 0 && patternState.iter2 < strip.numPixels()) {
+    int idx = patternState.forward ? strip.numPixels() - (patternState.iter2 + 1) : patternState.iter2;
+    color = calculateColor(idx, indexColor(idx));
+  }
+  else color = strip.getPixelColor(patternState.forward ? (strip.numPixels() - 1) : 0);
+  for(int i = 0; i < strip.numPixels(); i++) {
+    int idx = patternState.forward ? i : (strip.numPixels() - (i + 1));
+    uint32_t c = strip.getPixelColor(idx);
+    strip.setPixelColor(idx, color);
+    color = c;
   }
   strip.show();
+  patternState.iter2++;
   return 1;
 }
 
