@@ -25,6 +25,11 @@
 #define STRIP_DEFAULT_SPEED  NEO_KHZ800
 #define STRIP_DEFAULT_LAYOUT NEO_RGB
 
+#define C_RED(color) (uint8_t) ((color>>16) & 0xFF)
+#define C_GREEN(color) (uint8_t) ((color>>8) & 0xFF)
+#define C_BLUE(color) (uint8_t) (color & 0xFF)
+// #define C_WHITE(color) (uint8_t) ((color>>24) & 0xFF)
+
 bool spiffsActive = false;
 bool wifiOK = false;
 bool needReset = false;
@@ -56,6 +61,14 @@ uint32_t getColor(const char *c) {
   return color;
 }
 
+uint32_t midColor(uint32_t first, uint32_t sec, uint8_t pos) {
+  if(pos <= 1) return sec;
+  uint8_t red = C_RED(first) + ((C_RED(sec) - C_RED(first)) / pos);
+  uint8_t green = C_GREEN(first) + ((C_GREEN(sec) - C_GREEN(first)) / pos);
+  uint8_t blue = C_BLUE(first) + ((C_BLUE(sec) - C_BLUE(first)) / pos);
+  return Adafruit_NeoPixel::Color(red, green, blue);
+}
+
 struct PatternState {
   public:
     int pat_idx;                  // index of the current pattern in the current pattern file.
@@ -67,7 +80,7 @@ struct PatternState {
     enum PixelOp op = STRIPE;     // How to paint the colors across the strip.
     unsigned long lastActionTime; // timer for execution pacing
     int loops_left;               // Number of repeats left.
-    uint32_t colors[16];          // Array of colors to paint n the strip.
+    uint32_t colors[16];          // Array of colors to paint on the strip.
     int numcolors;                // Number of colors in the array.
     int rundelay;                 // execution speed.
     bool pauserun;                // pause execution if set.
@@ -227,6 +240,13 @@ int fillerFunc() {
   return 1;
 }
 
+int faderFunc() {
+  for(int i=0; i<strip.numPixels(); i++)
+    strip.setPixelColor(i, midColor(strip.getPixelColor(i), calculateColor(i, indexColor(i)), patternState.loops_left+1));
+  strip.show();
+  return 1;  
+}
+
 int wiperFunc() {
   for(int i = 0; i + patternState.iter1 < strip.numPixels(); i += patternState.spansize) {
     doPixelOp(patternState.forward ? (i + patternState.iter1) : ((strip.numPixels() - 1) - (i + patternState.iter1)));
@@ -308,6 +328,7 @@ int dummyFunc() { // Just to introduce delays
 
 int (*getPatternFunc(const char *funcstring))(void) {
   if(strcmp(funcstring, "fill") == 0) return fillerFunc;
+  if(strcmp(funcstring, "fade") == 0) return faderFunc;
   if(strcmp(funcstring, "wipe") == 0) return wiperFunc;
   if(strcmp(funcstring, "curtain") == 0) return curtainFunc;
   if(strcmp(funcstring, "shift") == 0) return shifterFunc;
