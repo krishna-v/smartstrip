@@ -439,17 +439,17 @@ void http_configure() {
   webserver->send(200, "application/json", cfgstr);
 }
 
-void http_notfound(){
-  webserver->send(404, "text/plain", "Not found\n");
+void http_notfound(String error) {
+  webserver->send(404, "text/plain", error + "\n");
 }
 
 class CmdHandler : public RequestHandler {
 
-  bool canHandle(HTTPMethod method, String uri) {
+  bool canHandle(HTTPMethod method, const String& uri) override {
     return uri != NULL && uri.startsWith("/cmd/");
   }
-
-  bool handle(ESP8266WebServer& server, HTTPMethod requestMethod, String requestUri) {
+  
+  bool handle(ESP8266WebServer& server, HTTPMethod requestMethod, const String& requestUri) override {
     Serial.print("Received Request: ");
     Serial.println(requestUri);
     
@@ -485,7 +485,7 @@ class CmdHandler : public RequestHandler {
         patternFill(colorarray, idx);
       }
     } else {
-      http_notfound();
+      http_notfound("CmdHandler: Could not hsndle request -> " + requestUri);
       return true;
     }
     server.send(204, "");
@@ -677,7 +677,7 @@ class PatternHandler : public RequestHandler {
     String filename = server.arg("filename");
     
     if(filename.isEmpty()) {
-      server.send(400, "text/plain", "Error: filename argument required.");
+      server.send(400, "text/plain", "Error: filename argument required.\n");
       return true;
     }
     if (!filename.startsWith("/")) filename = "/" + filename;
@@ -685,7 +685,7 @@ class PatternHandler : public RequestHandler {
       File file = SPIFFS.open(filename, "r");
       size_t sent = server.streamFile(file, "application/json");
       file.close();
-    } else http_notfound();
+    } else http_notfound("printFile: Could not find file -> " + requestUri);
     return true;
   }
 
@@ -725,17 +725,17 @@ class PatternHandler : public RequestHandler {
 
   public:
   
-  bool canHandle(HTTPMethod method, String uri) {
+  bool canHandle(HTTPMethod method, const String& uri) override {
     Serial.print("canHandle called for URI: "); Serial.println(uri);
     return uri != NULL && uri.startsWith("/pattern/");
   }
 
-  bool canUpload(String uri) {
+  bool canUpload(const String& uri) override {
     Serial.print("canUpload called for URI: "); Serial.println(uri);
     return uri != NULL && uri.equals("/pattern/load");
   }
 
-  void upload(ESP8266WebServer& server, String uri, HTTPUpload& upload) {
+  void upload(ESP8266WebServer& server, const String& uri, HTTPUpload& upload) override {
     Serial.println("Upload Function called.");
     printArgs(server);
     printHeaders(server);
@@ -762,7 +762,7 @@ class PatternHandler : public RequestHandler {
     }
   }
   
-  bool handle(ESP8266WebServer& server, HTTPMethod requestMethod, String requestUri) {
+  bool handle(ESP8266WebServer& server, HTTPMethod requestMethod, const String& requestUri) override {
     Serial.print("Received Request: ");
     Serial.println(requestUri);
     
@@ -772,12 +772,26 @@ class PatternHandler : public RequestHandler {
     else if(requestUri.equals("/pattern/load")) processLoad(server, requestMethod, requestUri);
     else if(requestUri.equals("/pattern/open")) loadFromFile(server, requestMethod, requestUri);
     else if(requestUri.equals("/pattern/print")) printFile(server, requestMethod, requestUri);
-    else http_notfound();
+    else http_notfound("PatternHandler: Could not hsndle request -> " + requestUri);
     Serial.println("Finished Handler.");
     return true;
   }
   
 } patternHandler;
+
+class DefaultHandler : public RequestHandler {
+  public:
+  
+  bool canHandle(HTTPMethod method, const String& uri) override {
+    Serial.print("canHandle called for URI: "); Serial.println(uri);
+    return true;
+  }
+  
+  bool handle(ESP8266WebServer& server, HTTPMethod requestMethod, const String& requestUri) override {
+    http_notfound("DefaultHandler: Could not hsndle request -> " + requestUri);
+    return true;
+  }
+} defaultHandler;
 
 // ################################## SPIFFS ############################################
 
@@ -803,8 +817,10 @@ int loadJSONFile(const char *filename, JsonDocument& doc) {
 }
 
 // #######################################################################################
+uint8_t led_state = HIGH;
 
 void setup() {
+  pinMode(LED, OUTPUT);
   randomSeed(analogRead(0));
   Serial.begin(115200);
   delay(1000);
@@ -833,30 +849,36 @@ void setup() {
     int www_port = cfg["wifi"]["www_port"].as<unsigned int>();
     
     WiFi.begin(ssid, pass);
-    while(WiFi.status() != WL_CONNECTED) {
+    unsigned long start_ts = millis();
+    
+    while(millis() < start_ts + 60000) { // Try to connect to WIFI for 60 seconds 
+      if(WiFi.status() == WL_CONNECTED) {
+        wifiOK = true;
+        break;
+      }
       digitalWrite(LED, LOW); //ON
       delay(250);
       digitalWrite(LED, HIGH); //OFF
       delay(250);
     }
-    WiFi.setAutoReconnect(1);
-    digitalWrite(LED, LOW); // ON
-    Serial.println("\nConnection established!");  
-    Serial.print("IP address:\t");
-    Serial.println(WiFi.localIP());
+    if(wifiOK) {
+      WiFi.setAutoReconnect(true);
+      digitalWrite(LED, LOW); // ON
+      Serial.println("\nConnection established!");  
+      Serial.print("IP address:\t");
+      Serial.println(WiFi.localIP());
+      ArduinoOTA.begin();
   
-    ArduinoOTA.begin();
-  
-    Serial.print("About to start Web server on port ");
-    Serial.println(String(www_port));
-    webserver = new ESP8266WebServer(www_port);
-    webserver->on("/", http_root);
-    webserver->on("/configure", http_configure);
-    webserver->addHandler(&cmdHandler);
-    webserver->addHandler(&patternHandler);
-    webserver->onNotFound(http_notfound);
-    webserver->begin();
-    wifiOK = true;
+      Serial.print("About to start Web server on port ");
+      Serial.println(String(www_port));
+      webserver = new ESP8266WebServer(www_port);
+      webserver->on("/", http_root);
+      webserver->on("/configure", http_configure);
+      webserver->addHandler(&cmdHandler);
+      webserver->addHandler(&patternHandler);
+      webserver->addHandler(&defaultHandler);
+      webserver->begin();
+    }
   }
   strip.begin();
   strip.show();
@@ -868,6 +890,7 @@ void setup() {
   else patternState.initialize(0, patterns.as<JsonArrayConst>()[0].as<JsonObjectConst>());
 
   Serial.println("Setup complete.");
+  digitalWrite(LED, led_state);
 }
 
 // ####################################################################################
@@ -892,6 +915,8 @@ void loop() {
   if(patternState.pfunc != NULL) done = (*(patternState.pfunc))();
   if(done == 1 && patternState.nextloop() < 0) {
     patternState.nextPattern();
+    led_state = 1 - led_state;
+    digitalWrite(LED, led_state);
   }
   patternState.lastActionTime = millis();
 }
